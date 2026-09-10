@@ -1,0 +1,1145 @@
+---
+title: "Employee Absenteeism Analysis"
+author: "Chau Anh Le"
+date: "`r Sys.Date()`"
+
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    theme: cosmo
+runtime: shiny
+---
+
+```{r setup, message=FALSE, warning=FALSE, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+
+library(readxl)
+library(shiny)
+library(DT)
+library(flexdashboard)
+library(ggplot2)
+```
+
+# 1. Introduction and Business Problem
+
+- *Absenteeism_at_work* dataset.
+- **Business Problem**: HR needs a reliable way to identify employee records that are more likely to be associated with high absenteeism so they can improve workforce planning and reduce productivity disruption.
+- The variable of interest is **Absenteeism time in hours**. For predictive analysis, this variable is transformed into a binary outcome: **High absence** and **Low absence**.
+- High absence is defined as 8 hours or more. This threshold is selected because the average absence time is around 6.9 hours, and 8 hours represents approximately one full working day.
+- The model should be used as a decision-support tool for workforce planning, not as an automatic decision-maker for employees or job applicants.
+
+# 2. Load and Inspect the Dataset
+
+## Row {data-height="350"}
+
+### **View first few rows**
+
+```{r}
+df <- read_excel("Absenteeism_at_work.xls")
+
+head(df)
+```
+
+## Row {data-height="950"}
+
+### **Data types**
+
+```{r}
+str(df)
+
+```
+
+### **Summary table**
+
+```{r}
+summary(df)
+```
+
+## 
+
+-   The original dataset has 21 variables. The variable of interest is “Absenteeism time in hours”.
+-   To support logistic regression, this numeric variable is transformed into a binary classification outcome: High absenteeism and Low absenteeism.
+
+# 3. Data Preparation
+
+## Row {data-height="600"}
+
+### **Missing values**
+
+```{r missing-values}
+sum(is.na(df))
+colSums(is.na(df))
+```
+
+-   No missing values
+
+### **Duplicated rows**
+
+```{r}
+sum(duplicated(df))
+dfc <- unique(df)
+sum(duplicated(dfc))
+dim(dfc)
+```
+
+-   34 duplicated rows were removed.
+
+```{r}
+# Remove invalid month value
+dfc <- dfc[dfc$`Month of absence` != 0, ]
+```
+
+## Row {data-height="400"}
+
+### **Classify "absenteeism hours" in to High and Low for further analysis**
+
+```{r rename-variable}
+names(dfc)[names(dfc) == "Absenteeism time in hours"] <- "absenteeism_hours"
+```
+
+```{r}
+# Create binary target table for predictive analysis
+dfc$high_absence <- ifelse(dfc$absenteeism_hours >= 8, "High", "Low")
+# Convert to factor
+dfc$high_absence <- factor(dfc$high_absence, levels = c("Low", "High"))
+```
+
+```{r}
+# High and low absence distribution
+table(dfc$high_absence)
+prop.table(table(dfc$high_absence))
+```
+
+### 
+
+```{r}
+ggplot(as.data.frame(table(dfc$high_absence)), 
+       aes(x = "", y = Freq, fill = Var1)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(Var1, "\n", round(Freq / sum(Freq) * 100, 1), "%")),
+            position = position_stack(vjust = 0.5),
+            color = "white",
+            size = 4) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Proportion of High and Low Absence",
+    fill = "Absence Group"
+  ) +
+  theme_void()
+```
+
+## Row {data-height="650"}
+
+### **Classify body mass index into 3 categories**
+
+```{r categorise-bmi}
+# Categorise bmi
+dfc$bmi_category <- cut(
+  dfc$`Body mass index`,
+  breaks = c(-Inf, 18.5, 24.9, Inf),
+  labels = c("Underweight", "Normal", "Overweight")
+)
+# Convert to factor
+dfc$bmi_category <- as.factor(dfc$bmi_category)
+
+table(dfc$bmi_category)
+prop.table(table(dfc$bmi_category))
+```
+
+### **Employees' BMI distribution**
+
+```{r bmi-dist}
+ggplot(dfc, aes(x = bmi_category, fill = bmi_category)) + geom_bar() +
+  labs(x = "BMI category", 
+  y = "Number of employees",
+  title ="Employee's BMI") +
+  theme_bw()
+```
+
+## Row {data-height="650"}
+
+### **Check outliers in variable of interest - Absenteeism in Hours**
+
+```{r}
+# Check outliers in variable of interest
+boxplot.stats(dfc$absenteeism_hours)  # 44
+
+```
+
+### **Boxplot showing outliers in Absenteeism in Hours**
+
+```{r}
+# Boxplot before capping
+boxplot(dfc$absenteeism_hours,
+        main = "Boxplot for Absenteeism in Hours (Before)",
+        xlab = "Absenteeism in Hours",
+        ylab = "Hours")
+```
+
+### **Distribution of Absenteeism in Hours Before Capping**
+
+```{r}
+# Histogram before capping
+ggplot(data = dfc, aes(x = absenteeism_hours)) + 
+  geom_histogram() +
+  labs(
+    title = "Distribution of Absenteeism Hours Before Capping",
+    x = "Absenteeism Hours",
+    y = "Number of Records"
+  ) +
+  theme_bw()
+```
+
+## Row {data-height="650"}
+
+### **Using IQR method to treat outliers**
+
+```{r}
+# IQR capping for absenteeism_hours
+Q1 <- quantile(dfc$absenteeism_hours, 0.25)
+Q3 <- quantile(dfc$absenteeism_hours, 0.75)
+IQR_value <- IQR(dfc$absenteeism_hours)
+
+lower_bound <- Q1 - 1.5 * IQR_value
+upper_bound <- Q3 + 1.5 * IQR_value
+
+lower_bound
+upper_bound
+
+# Identify outliers
+outlier <- dfc$absenteeism_hours[dfc$absenteeism_hours < lower_bound | dfc$absenteeism_hours > upper_bound]
+outlier
+
+# Create capped version
+dfc$absenteeism_hours_capped <- dfc$absenteeism_hours
+
+dfc$absenteeism_hours_capped[dfc$absenteeism_hours < lower_bound] <- lower_bound
+dfc$absenteeism_hours_capped[dfc$absenteeism_hours > upper_bound] <- upper_bound
+```
+
+### **Boxplot showing Absenteeism in Hours after Capping**
+
+```{r}
+# Boxplot after capping
+boxplot(dfc$absenteeism_hours_capped,
+        main = "Boxplot for Absenteeism Hours After Capping",
+        xlab = "Absenteeism in Hours Capped",
+        ylab = "Hours")
+```
+
+### **Distribution of Absenteeism in Hours After Capping**
+
+```{r}
+# Histogram after capping
+ggplot(data = dfc, aes(x = absenteeism_hours_capped)) + 
+  geom_histogram() +
+  labs(
+    title = "Distribution of Absenteeism Hours After Capping",
+    x = "Capped Absenteeism Hours",
+    y = "Number of Records"
+  ) + 
+  theme_bw()
+```
+
+```{r}
+# Convert categorical variable
+dfc$`Reason for absence` <- as.factor(dfc$`Reason for absence`)
+dfc$`Month of absence` <- as.factor(dfc$`Month of absence`)
+dfc$`Day of the week` <- as.factor(dfc$`Day of the week`)
+dfc$Seasons <- as.factor(dfc$Seasons)
+dfc$`Disciplinary failure` <- as.factor(dfc$`Disciplinary failure`)
+dfc$Education <- as.factor(dfc$Education)
+dfc$`Social drinker` <- as.factor(dfc$`Social drinker`)
+dfc$`Social smoker` <- as.factor(dfc$`Social smoker`)
+
+# Create clearer labels for Reason for absence
+reason_labels <- c(
+  "0" = "0 Unknown / not specified",
+  "1" = "1 Infectious/parasitic diseases",
+  "2" = "2 Neoplasms",
+  "3" = "3 Blood/immune disorders",
+  "4" = "4 Endocrine/metabolic diseases",
+  "5" = "5 Mental/behavioural disorders",
+  "6" = "6 Nervous system diseases",
+  "7" = "7 Eye diseases",
+  "8" = "8 Ear diseases",
+  "9" = "9 Circulatory system diseases",
+  "10" = "10 Respiratory diseases",
+  "11" = "11 Digestive diseases",
+  "12" = "12 Skin diseases",
+  "13" = "13 Musculoskeletal diseases",
+  "14" = "14 Genitourinary diseases",
+  "15" = "15 Pregnancy/childbirth",
+  "16" = "16 Perinatal conditions",
+  "17" = "17 Congenital conditions",
+  "18" = "18 Symptoms/signs not classified",
+  "19" = "19 Injury/poisoning",
+  "20" = "20 External causes",
+  "21" = "21 Health service factors",
+  "22" = "22 Patient follow-up",
+  "23" = "23 Medical consultation",
+  "24" = "24 Blood donation",
+  "25" = "25 Laboratory examination",
+  "26" = "26 Unjustified absence",
+  "27" = "27 Physiotherapy",
+  "28" = "28 Dental consultation"
+)
+
+dfc$reason_label <- reason_labels[as.character(dfc$`Reason for absence`)]
+dfc$reason_label <- as.factor(dfc$reason_label)
+
+# Create clearer labels for Education
+education_labels <- c(
+  "1" = "1 High school",
+  "2" = "2 Graduate",
+  "3" = "3 Postgraduate",
+  "4" = "4 Master/doctor"
+)
+
+dfc$education_label <- education_labels[as.character(dfc$Education)]
+dfc$education_label <- as.factor(dfc$education_label)
+
+# Add labels to Seasons
+dfc$season_label <- factor(
+  dfc$Seasons,
+  levels = c(1, 2, 3, 4),
+  labels = c("Summer", "Autumn", "Winter", "Spring")
+)
+
+# Add labels to Day of the week
+dfc$day_label <- factor(
+  dfc$`Day of the week`,
+  levels = c(2, 3, 4, 5, 6),
+  labels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+)
+```
+
+## Row {data-height="650"}
+
+### **Summary statistics of the cleaned dataset**
+
+```{r}
+summary(dfc)
+```
+
+# 4. Descriptive Analytics
+
+## Row {data-height=450}
+
+```{r}
+cat_choices <- c(
+  "Reason for absence" = "reason_label",
+  "Education" = "education_label",
+  "Month of absence" = "Month of absence",
+  "Day of the week" = "day_label",
+  "Seasons" = "season_label",
+  "Social drinker" = "Social drinker",
+  "Social smoker" = "Social smoker",
+  "BMI category" = "bmi_category"
+)
+
+selectInput(
+  inputId = "selected_cat",
+  label = "Choose a categorical variable to explore:",
+  choices = cat_choices,
+  selected = "reason_label"
+)
+```
+
+```{r}
+renderPlot({
+  
+  df_plot <- dfc
+  df_plot$selected_variable <- df_plot[[input$selected_cat]]
+  
+  var_label <- names(cat_choices)[cat_choices == input$selected_cat]
+  
+  p <- ggplot(df_plot, aes(x = selected_variable, fill = high_absence)) +
+    geom_bar(position = "fill") +
+    labs(
+      title = paste("Proportion of High and Low Absence by", var_label),
+      x = var_label,
+      y = "Proportion",
+      fill = "Absence Group"
+    ) +
+    theme_bw()
+  
+  if (input$selected_cat == "reason_label") {
+    p <- p + coord_flip()
+  }
+  
+  p
+})
+```
+
+```{r}
+renderPlot({
+  
+  df_plot <- dfc
+  df_plot$selected_variable <- df_plot[[input$selected_cat]]
+  
+  var_label <- names(cat_choices)[cat_choices == input$selected_cat]
+  
+  p <- ggplot(df_plot, aes(x = selected_variable, y = absenteeism_hours_capped)) +
+    geom_boxplot() +
+    labs(
+      title = paste("Absenteeism Hours by", var_label),
+      x = var_label,
+      y = "Absenteeism Hours"
+    ) +
+    theme_bw()
+  
+  if (input$selected_cat == "reason_label") {
+    p <- p + coord_flip()
+  }
+  
+  p
+})
+```
+
+## Row {data-height=250}
+
+### **Select numeric variable**
+
+```{r}
+num_choices <- c(
+  "Transportation expense" = "Transportation expense",
+  "Distance from Residence to Work" = "Distance from Residence to Work",
+  "Service time" = "Service time",
+  "Age" = "Age",
+  "Work load Average/day" = "Work load Average/day",
+  "Hit target" = "Hit target",
+  "Number of children" = "Son",
+  "Number of pets" = "Pet",
+  "Weight" = "Weight",
+  "Height" = "Height",
+  "Body mass index" = "Body mass index"
+)
+
+selectInput(
+  inputId = "selected_num",
+  label = "Choose a numeric variable to explore:",
+  choices = num_choices,
+  selected = "Age"
+)
+```
+
+### **Correlation with absenteeism hours**
+
+```{r}
+renderPrint({
+  
+  selected_numeric <- dfc[[input$selected_num]]
+  
+  correlation_value <- cor(
+    selected_numeric,
+    dfc$absenteeism_hours,
+    use = "complete.obs"
+  )
+  
+  cat(
+    "Correlation between",
+    names(num_choices)[num_choices == input$selected_num],
+    "and absenteeism hours:",
+    round(correlation_value, 3)
+  )
+  
+})
+```
+
+## Row {data-height=650}
+
+### **Relationship with absenteeism hours**
+
+```{r}
+renderPlot({
+  
+  df_plot <- dfc
+  df_plot$selected_numeric <- df_plot[[input$selected_num]]
+  
+  var_label <- names(num_choices)[num_choices == input$selected_num]
+  
+  ggplot(df_plot, aes(x = selected_numeric, y = absenteeism_hours_capped)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE) +
+    labs(
+      title = paste("Relationship Between", var_label, "and Absenteeism Hours"),
+      x = var_label,
+      y = "Absenteeism Hours"
+    ) +
+    theme_bw()
+  
+})
+```
+
+### **Numeric variable by absence group**
+
+```{r}
+renderPlot({
+  
+  df_plot <- dfc
+  df_plot$selected_numeric <- df_plot[[input$selected_num]]
+  
+  var_label <- names(num_choices)[num_choices == input$selected_num]
+  
+  ggplot(df_plot, aes(x = high_absence, y = selected_numeric, fill = high_absence)) +
+    geom_boxplot() +
+    labs(
+      title = paste(var_label, "by Absence Group"),
+      x = "Absence Group",
+      y = var_label,
+      fill = "Absence Group"
+    ) +
+    theme_bw()
+  })
+```
+
+# 5. Predictive Analytics with Logistic Regression
+
+## Row {data-height=620}
+
+### **Prepare data for logistic regression**
+
+```{r}
+# Select variables for logistic regression model
+model_data <- dfc[, c(
+  "high_absence",
+  "Education",
+  "Son",
+  "Age",
+  "Transportation expense",
+  "Work load Average/day",
+  "Service time",
+  "Month of absence",
+  "Day of the week",
+  "Seasons"
+)]
+
+# Make sure the target variable is a factor
+model_data$high_absence <- factor(
+  model_data$high_absence,
+  levels = c("Low", "High")
+)
+
+# Make sure categorical predictors are factors
+model_data$Education <- as.factor(model_data$Education)
+model_data$`Month of absence` <- as.factor(model_data$`Month of absence`)
+model_data$`Day of the week` <- as.factor(model_data$`Day of the week`)
+model_data$Seasons <- as.factor(model_data$Seasons)
+
+head(model_data)
+str(model_data)
+table(model_data$high_absence)
+```
+
+## Row {data-height=330}
+
+### **Train and test split**
+
+```{r}
+set.seed(123)
+
+train_index <- sample(
+  1:nrow(model_data),
+  size = 0.7 * nrow(model_data)
+)
+
+train_data <- model_data[train_index, ]
+test_data <- model_data[-train_index, ]
+
+nrow(train_data)
+nrow(test_data)
+
+table(train_data$high_absence)
+table(test_data$high_absence)
+```
+
+## Row {data-height=3200}
+
+### **Test different logistic regression models**
+
+```{r}
+# Model 1: simple employee-related model
+model_1 <- glm(
+  high_absence ~ Education + Son + Age + `Transportation expense`,
+  data = train_data,
+  family = binomial
+)
+
+# Model 2: full model with employee, work and time-related predictors
+model_2 <- glm(
+  high_absence ~ Education + Son + Age +
+    `Transportation expense` +
+    `Work load Average/day` +
+    `Service time` +
+    `Month of absence` +
+    `Day of the week` +
+    Seasons,
+  data = train_data,
+  family = binomial
+)
+
+# Model 3: remove weak numeric predictors
+model_3 <- glm(
+  high_absence ~ Education +
+    `Transportation expense` +
+    `Work load Average/day` +
+    `Month of absence` +
+    `Day of the week` +
+    Seasons,
+  data = train_data,
+  family = binomial
+)
+
+# Model 4: final statistically focused model
+model_4 <- glm(
+  high_absence ~
+    `Transportation expense` +
+    `Work load Average/day` +
+    `Month of absence` +
+    `Day of the week` +
+    Seasons,
+  data = train_data,
+  family = binomial
+)
+
+summary(model_1)
+summary(model_2)
+summary(model_3)
+summary(model_4)
+```
+
+## Row {data-height=400}
+
+### **Compare model performance**
+
+```{r}
+# Function to evaluate each model
+evaluate_model <- function(model, test_data, cutoff = 0.50) {
+  
+  predicted_probability <- predict(
+    model,
+    newdata = test_data,
+    type = "response"
+  )
+  
+  predicted_class <- ifelse(
+    predicted_probability >= cutoff,
+    "High",
+    "Low"
+  )
+  
+  predicted_class <- factor(
+    predicted_class,
+    levels = c("Low", "High")
+  )
+  
+  confusion_matrix <- table(
+    Actual = test_data$high_absence,
+    Predicted = predicted_class
+  )
+  
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  
+  false_positive <- confusion_matrix["Low", "High"]
+  false_negative <- confusion_matrix["High", "Low"]
+  
+  sensitivity <- confusion_matrix["High", "High"] / sum(confusion_matrix["High", ])
+  specificity <- confusion_matrix["Low", "Low"] / sum(confusion_matrix["Low", ])
+  
+  return(c(
+    Accuracy = accuracy,
+    False_Positive = false_positive,
+    False_Negative = false_negative,
+    Sensitivity = sensitivity,
+    Specificity = specificity
+  ))
+}
+
+# Function to count statistically significant coefficients
+count_significant <- function(model) {
+  
+  p_values <- summary(model)$coefficients[, 4]
+  p_values <- p_values[-1] # remove intercept
+  
+  significant_count <- sum(p_values < 0.05)
+  
+  return(significant_count)
+}
+
+model_eval <- rbind(
+  evaluate_model(model_1, test_data),
+  evaluate_model(model_2, test_data),
+  evaluate_model(model_3, test_data),
+  evaluate_model(model_4, test_data)
+)
+
+model_comparison <- data.frame(
+  Model = c("Model 1", "Model 2", "Model 3", "Model 4"),
+  Description = c(
+    "Simple employee-related model",
+    "Full model",
+    "Removed weak numeric predictors",
+    "Final statistically focused model"
+  ),
+  AIC = c(
+    AIC(model_1),
+    AIC(model_2),
+    AIC(model_3),
+    AIC(model_4)
+  ),
+  Accuracy = model_eval[, "Accuracy"],
+  False_Positive = model_eval[, "False_Positive"],
+  False_Negative = model_eval[, "False_Negative"],
+  Sensitivity = model_eval[, "Sensitivity"],
+  Specificity = model_eval[, "Specificity"],
+  Significant_Coefficients = c(
+    count_significant(model_1),
+    count_significant(model_2),
+    count_significant(model_3),
+    count_significant(model_4)
+  )
+)
+
+model_comparison$AIC <- round(model_comparison$AIC, 2)
+model_comparison$Accuracy <- round(model_comparison$Accuracy, 3)
+model_comparison$Sensitivity <- round(model_comparison$Sensitivity, 3)
+model_comparison$Specificity <- round(model_comparison$Specificity, 3)
+
+datatable(model_comparison, rownames = FALSE)
+```
+
+## Row {data-height=1000}
+
+### **Final model selection**
+
+```{r}
+# Select the final model
+final_model <- model_4
+```
+
+Final selected model: **Model 4**
+
+Reasons for selection:
+
+- It has the lowest AIC among the tested models.
+- It removes weaker predictors such as education, age, number of children and service time.
+- It keeps statistically stronger predictors that are easier to explain to HR.
+- It has similar accuracy to the fuller model, while being simpler.
+
+Note:
+The final model is not selected because every coefficient is significant. It is selected because it provides the best balance of model fit, accuracy, simplicity and business meaning.
+
+```{r}
+summary(final_model)
+```
+
+## Row {data-height=280}
+
+### **Final model equation**
+
+```{r}
+coef_final <- coef(final_model)
+
+# Start equation
+equation_text <- paste0(
+  "Probability of High Absence = 1 / (1 + exp(-(",
+  round(coef_final["(Intercept)"], 4)
+)
+
+# Add each coefficient and variable into the equation
+for (i in 2:length(coef_final)) {
+  
+  sign_symbol <- ifelse(coef_final[i] >= 0, " + ", " - ")
+  
+  equation_text <- paste0(
+    equation_text,
+    sign_symbol,
+    format(abs(coef_final[i]), scientific = FALSE, digits = 5),
+    " × ",
+    names(coef_final)[i]
+  )
+}
+
+# Close equation
+equation_text <- paste0(equation_text, ")))")
+
+cat(equation_text)
+```
+Business meaning:
+
+- The model estimates the probability that an employee record belongs to the High Absence group.
+- The final predictors are transportation expense, workload average per day, month of absence, day of the week and season.
+- A higher predicted probability means the record is more likely to be classified as High Absence.
+
+
+## Row {data-height=240}
+
+### **Predict Probability of High absence for the Test Dataset**
+
+```{r}
+predicted_probability <- predict(
+  final_model,
+  newdata = test_data,
+  type = "response"
+)
+
+head(predicted_probability)
+summary(predicted_probability)
+```
+
+## Row {data-height=250}
+
+### **Classify using cutoff 0.50**
+
+```{r}
+fixed_cutoff <- 0.50
+
+predicted_class <- ifelse(
+  predicted_probability >= fixed_cutoff,
+  "High",
+  "Low"
+)
+
+predicted_class <- factor(
+  predicted_class,
+  levels = c("Low", "High")
+)
+
+head(predicted_class)
+table(predicted_class)
+```
+
+## Row {data-height=180}
+
+### **Confusion matrix**
+
+```{r}
+confusion_matrix <- table(
+  Actual = test_data$high_absence,
+  Predicted = predicted_class
+)
+
+confusion_matrix
+```
+
+## Row {data-height=120}
+
+### **Classification accuracy**
+
+```{r}
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+accuracy
+```
+
+## Row {data-height=120}
+
+### **Interactive cutoff slider**
+
+```{r}
+sliderInput(
+  inputId = "cutoff_value",
+  label = "Choose probability cutoff for High Absence:",
+  min = 0,
+  max = 1,
+  value = 0.5,
+  step = 0.05
+)
+```
+
+## Row {data-height=250}
+
+### **Interactive confusion matrix**
+
+```{r}
+renderDT({
+  
+  predicted_probability <- predict(
+    final_model,
+    newdata = test_data,
+    type = "response"
+  )
+  
+  predicted_class <- ifelse(
+    predicted_probability >= input$cutoff_value,
+    "High",
+    "Low"
+  )
+  
+  predicted_class <- factor(
+    predicted_class,
+    levels = c("Low", "High")
+  )
+  
+  confusion_matrix <- table(
+    Actual = test_data$high_absence,
+    Predicted = predicted_class
+  )
+  
+  confusion_table <- as.data.frame.matrix(confusion_matrix)
+  
+  datatable(confusion_table, rownames = TRUE)
+  
+})
+```
+
+### **Accuracy and error rates**
+
+```{r}
+renderPrint({
+  
+  predicted_probability <- predict(
+    final_model,
+    newdata = test_data,
+    type = "response"
+  )
+  
+  predicted_class <- ifelse(
+    predicted_probability >= input$cutoff_value,
+    "High",
+    "Low"
+  )
+  
+  predicted_class <- factor(
+    predicted_class,
+    levels = c("Low", "High")
+  )
+  
+  confusion_matrix <- table(
+    Actual = test_data$high_absence,
+    Predicted = predicted_class
+  )
+  
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  
+  class_1_error <- confusion_matrix["High", "Low"] / sum(confusion_matrix["High", ])
+  class_0_error <- confusion_matrix["Low", "High"] / sum(confusion_matrix["Low", ])
+  
+  sensitivity <- confusion_matrix["High", "High"] / sum(confusion_matrix["High", ])
+  specificity <- confusion_matrix["Low", "Low"] / sum(confusion_matrix["Low", ])
+  
+  cat("Cutoff value:", input$cutoff_value, "\n")
+  cat("Accuracy:", round(accuracy, 3), "\n")
+  cat("Class 1 error rate - actual High predicted Low:", round(class_1_error, 3), "\n")
+  cat("Class 0 error rate - actual Low predicted High:", round(class_0_error, 3), "\n")
+  cat("Sensitivity - correctly predicted High:", round(sensitivity, 3), "\n")
+  cat("Specificity - correctly predicted Low:", round(specificity, 3), "\n")
+  
+})
+```
+
+# 6. HR Prediction Tool and Recommendations
+
+## Row {data-height=350}
+
+### **Enter employee/applicant information**
+
+```{r}
+numericInput(
+  inputId = "new_transport",
+  label = "Transportation expense:",
+  value = 200,
+  min = 0
+)
+
+numericInput(
+  inputId = "new_workload",
+  label = "Workload average per day:",
+  value = 270000,
+  min = 0
+)
+```
+
+### **Select time-related information**
+
+```{r}
+selectInput(
+  inputId = "new_month",
+  label = "Month of absence:",
+  choices = c(
+    "January" = "1",
+    "February" = "2",
+    "March" = "3",
+    "April" = "4",
+    "May" = "5",
+    "June" = "6",
+    "July" = "7",
+    "August" = "8",
+    "September" = "9",
+    "October" = "10",
+    "November" = "11",
+    "December" = "12"
+  ),
+  selected = "7"
+)
+
+selectInput(
+  inputId = "new_day",
+  label = "Day of the week:",
+  choices = c(
+    "Monday" = "2",
+    "Tuesday" = "3",
+    "Wednesday" = "4",
+    "Thursday" = "5",
+    "Friday" = "6"
+  ),
+  selected = "2"
+)
+
+selectInput(
+  inputId = "new_season",
+  label = "Season:",
+  choices = c(
+    "Summer" = "1",
+    "Autumn" = "2",
+    "Winter" = "3",
+    "Spring" = "4"
+  ),
+  selected = "1"
+)
+```
+
+### **Choose cutoff threshold**
+
+```{r}
+sliderInput(
+  inputId = "new_cutoff",
+  label = "Choose cutoff threshold for High Absence:",
+  min = 0,
+  max = 1,
+  value = 0.5,
+  step = 0.05
+)
+```
+
+## Row {data-height=300}
+
+### **Prediction result**
+
+```{r}
+renderPrint({
+  
+  # Create new record using the same column names as the model
+  new_record <- data.frame(
+    `Transportation expense` = input$new_transport,
+    `Work load Average/day` = input$new_workload,
+    `Month of absence` = factor(
+      input$new_month,
+      levels = levels(train_data$`Month of absence`)
+    ),
+    `Day of the week` = factor(
+      input$new_day,
+      levels = levels(train_data$`Day of the week`)
+    ),
+    Seasons = factor(
+      input$new_season,
+      levels = levels(train_data$Seasons)
+    ),
+    check.names = FALSE
+  )
+  
+  # Predict probability of High Absence
+  predicted_probability_new <- predict(
+    final_model,
+    newdata = new_record,
+    type = "response"
+  )
+  
+  # Classify using selected cutoff
+  predicted_class_new <- ifelse(
+    predicted_probability_new >= input$new_cutoff,
+    "High Absence",
+    "Low Absence"
+  )
+  
+  cat("Predicted probability of High Absence:", 
+      round(predicted_probability_new, 3), "\n")
+  
+  cat("Selected cutoff threshold:", 
+      input$new_cutoff, "\n")
+  
+  cat("Predicted classification:", 
+      predicted_class_new, "\n")
+  
+})
+```
+
+### **HR recommendation based on prediction**
+
+```{r}
+renderPrint({
+  
+  new_record <- data.frame(
+    `Transportation expense` = input$new_transport,
+    `Work load Average/day` = input$new_workload,
+    `Month of absence` = factor(
+      input$new_month,
+      levels = levels(train_data$`Month of absence`)
+    ),
+    `Day of the week` = factor(
+      input$new_day,
+      levels = levels(train_data$`Day of the week`)
+    ),
+    Seasons = factor(
+      input$new_season,
+      levels = levels(train_data$Seasons)
+    ),
+    check.names = FALSE
+  )
+  
+  predicted_probability_new <- predict(
+    final_model,
+    newdata = new_record,
+    type = "response"
+  )
+  
+  predicted_class_new <- ifelse(
+    predicted_probability_new >= input$new_cutoff,
+    "High Absence",
+    "Low Absence"
+  )
+  
+  if (predicted_class_new == "High Absence") {
+    
+    cat("Recommendation:\n")
+    cat("This record is predicted as High Absence.\n")
+    cat("HR should consider workload backup, flexible staffing, and early support planning.\n")
+    cat("This prediction should support planning only and should not be used as an automatic hiring or employee decision.\n")
+    
+  } else {
+    
+    cat("Recommendation:\n")
+    cat("This record is predicted as Low Absence.\n")
+    cat("HR can proceed with normal workforce planning.\n")
+    cat("However, the result should still be reviewed together with human judgement and other workplace information.\n")
+    
+  }
+  
+})
+```
+
+## Row {data-height=450}
+
+### **Overall recommendations to HR**
+
+1. **Use the model as a planning tool, not an automatic decision-maker**  
+The model should support workforce planning and absence risk monitoring. It should not be used to automatically reject applicants or penalise employees.
+
+2. **Adjust the cutoff based on business priority**  
+A lower cutoff identifies more possible High Absence cases, reducing missed high-risk records but increasing false positives. A higher cutoff is stricter and reduces false positives but may miss more actual High Absence cases.
+
+3. **Prepare staffing buffers for high-risk periods**  
+Month and season are important predictors, so HR should prepare extra workload coverage during higher-risk months or seasons.
+
+4. **Monitor workload-related risk**  
+Workload average per day is included in the final model, suggesting workload patterns may help explain High Absence probability.
+
+5. **Use human judgement with model output**  
+The model achieved moderate accuracy, so predictions should be reviewed with context, fairness, and HR judgement before action is taken.
